@@ -1,8 +1,0 @@
-name: Test-Runner
-on: workflow_dispatch  # 仅手动触发
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Test Runner
-        run: echo "Runner正常，能执行步骤！"
