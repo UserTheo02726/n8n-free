@@ -1,0 +1,93 @@
+name: Daily Community Node Sync
+
+on:
+  schedule:
+    - cron: '0 20 * * *'    # 每天 UTC 20:00 (北京时间 04:00) 运行
+  workflow_dispatch:        # 支持手动触发
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # 允许提交代码
+    outputs:
+      has_changes: ${{ steps.commit.outputs.has_changes }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        # 不需要 fetch-depth: 0，默认的 depth 1 足够 push 到当前分支
+
+      - name: Sync Community Nodes
+        env:
+          DATABASE_URL: ${{ secrets.DB_POSTGRESDB_URI }}
+        run: |
+          # 1. 检查并安装 psql
+          if ! command -v psql &> /dev/null; then
+             sudo apt-get update && sudo apt-get install -y postgresql-client
+          fi
+          
+          # 2. 从数据库获取包名
+          PACKAGES=$(psql "$DATABASE_URL" -t -c "SELECT string_agg(\"packageName\", ' ') FROM installed_packages WHERE \"packageName\" NOT LIKE 'n8n-nodes-base%';")
+          PACKAGES=$(echo "$PACKAGES" | xargs)
+          echo "Found community packages: $PACKAGES"
+
+          # 3. 准备 Dockerfile 内容
+          START_MARK="# --- AUTO-GENERATED-COMMUNITY-NODES-START ---"
+          END_MARK="# --- AUTO-GENERATED-COMMUNITY-NODES-END ---"
+          
+          if [ -z "$PACKAGES" ]; then
+            NEW_CMD=""
+          else
+            NEW_CMD="RUN npm install -g $PACKAGES"
+          fi
+
+          # 4. 修改 Dockerfile
+          python3 -c "
+          import sys
+          file_path = 'Dockerfile'
+          start_mark = '$START_MARK'
+          end_mark = '$END_MARK'
+          new_content = '$NEW_CMD'
+          
+          try:
+            with open(file_path, 'r') as f: lines = f.readlines()
+            with open(file_path, 'w') as f:
+                in_zone = False; found = False
+                for line in lines:
+                    if start_mark in line:
+                        f.write(line); f.write(new_content + '\n'); in_zone = True; found = True
+                    elif end_mark in line:
+                        in_zone = False; f.write(line)
+                    elif not in_zone:
+                        f.write(line)
+            if not found:
+                print('Error: Anchor tags not found in Dockerfile'); sys.exit(1)
+          except Exception as e: print(e); sys.exit(1)
+          "
+
+      - name: Commit & Push to GitHub
+        id: commit
+        run: |
+          # 检查是否有变化
+          if git diff --quiet Dockerfile; then
+            echo "✅ Dockerfile is up to date. No changes needed."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Changes detected. Committing to GitHub..."
+            
+            git config user.name "n8n-sync-bot"
+            git config user.email "bot@github.com"
+            
+            git add Dockerfile
+            git commit -m "chore: sync community nodes from db"
+            git push
+            
+            echo "🚀 Pushed to GitHub."
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+  trigger-push-to-hf:
+    needs: check-and-update
+    if: needs.check-and-update.outputs.has_changes == 'true'
+    uses: ./.github/workflows/push-to-huggingface.yml
+    secrets: inherit
