@@ -38,7 +38,18 @@ jobs:
           if [ -z "$PACKAGES" ]; then
             NEW_CMD=""
           else
-            NEW_CMD="RUN mkdir -p /home/node/.n8n && cd /home/node/.n8n && npm install $PACKAGES --save && chown -R node:node /home/node/.n8n"
+            # 策略升级：由于 Space 可能会挂载 Volume 覆盖 .n8n 目录，
+            # 我们必须先把节点安装到临时目录 (/n8n-custom-nodes)，
+            # 然后在容器启动时 (CMD) 将其复制到 .n8n/nodes 目录。
+            NEW_CMD="RUN mkdir -p /n8n-custom-nodes && cd /n8n-custom-nodes && npm install $PACKAGES --save\n"
+            NEW_CMD+="\nUSER root\n"
+            NEW_CMD+="RUN printf \"#!/bin/sh\\\n"
+            NEW_CMD+="mkdir -p /home/node/.n8n/nodes\\\n"
+            NEW_CMD+="echo 'Initializing community nodes...'\\\n"
+            NEW_CMD+="cp -r /n8n-custom-nodes/node_modules/* /home/node/.n8n/nodes/\\\n"
+            NEW_CMD+="chown -R node:node /home/node/.n8n\\\n"
+            NEW_CMD+="exec n8n\" > /start-custom.sh && chmod +x /start-custom.sh\n"
+            NEW_CMD+="CMD [\"/start-custom.sh\"]"
           fi
 
           # 4. 修改 Dockerfile
