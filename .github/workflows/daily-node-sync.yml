@@ -53,12 +53,14 @@ jobs:
           fi
 
           # 4. 修改 Dockerfile
+          export NEW_CMD
           python3 -c "
           import sys
           file_path = 'Dockerfile'
           start_mark = '$START_MARK'
           end_mark = '$END_MARK'
           new_content = '$NEW_CMD'
+          new_content = os.environ.get('NEW_CMD', '')
           
           try:
             with open(file_path, 'r') as f: lines = f.readlines()
