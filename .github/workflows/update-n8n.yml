@@ -2,14 +2,77 @@ name: Check for n8n Updates and Sync to Hugging Face Space
 
 on:
   schedule:
-    - cron: '0 18 * * 5' # Every Friday at 18:00 UTC
-  workflow_dispatch:
+    - cron: '0 18 * * 5' # Every Friday at 18:00 UTC (02:00 Saturday CST)
+  workflow_dispatch:     # Allow manual trigger for testing
+
+permissions:
+  contents: write # Required write permission to modify Dockerfile
 
 jobs:
-  rebuild-space:
+  update-version:
+    runs-on: ubuntu-latest
+    outputs:
+      changes_detected: ${{ steps.auto_commit.outputs.changes_detected }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Get Latest n8n Version
+        id: get_version
+        run: |
+          echo "正在拉取 blowsnow/n8n-chinese:latest 获取真实版本号..."
+          
+          # 1. 拉取镜像
+          docker pull blowsnow/n8n-chinese:latest
+          
+          # 2. 运行并询问版本 (输出例如: 2.11.2)
+          VERSION=$(docker run --rm --entrypoint="" blowsnow/n8n-chinese:latest n8n --version)
+          
+          # 3. 清理一下输出 (防止有换行符)
+          VERSION=$(echo "$VERSION" | tr -d '\r\n')
+          
+          echo "✅ 获取到最新版本: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update Dockerfile
+        run: |
+          NEW_VER="${{ steps.get_version.outputs.version }}"
+          
+          if [ -z "$NEW_VER" ]; then
+             echo "❌ 获取版本失败，脚本停止"
+             exit 1
+          fi
+
+          echo "正在将 Dockerfile 更新至版本: $NEW_VER"
+
+          # 1. 替换 FROM 行 (支持替换 latest 或 旧版本号)
+          sed -i -E "s/blowsnow\/n8n-chinese:[a-zA-Z0-9.-]+/blowsnow\/n8n-chinese:$NEW_VER/g" Dockerfile
+
+          # 2. 替换 RUN npm install 行 (支持替换 latest 或 旧版本号)
+          sed -i -E "s/n8n@[a-zA-Z0-9.-]+/n8n@$NEW_VER/g" Dockerfile
+          
+          echo "🔍 修改后的文件内容检查:"
+          grep -E "blowsnow|npm install" Dockerfile
+
+      - name: Auto Commit
+        id: auto_commit
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Auto-update n8n to version ${{ steps.get_version.outputs.version }}"
+          file_pattern: Dockerfile
+          push_options: '--force'
+
+  trigger-sync:
+    needs: update-version
+    if: needs.update-version.outputs.changes_detected == 'true'
+    uses: ./.github/workflows/push-to-huggingface.yml
+    secrets: inherit
+
+  reboot-space:
+    needs: trigger-sync
     runs-on: ubuntu-latest
     steps:
-      - name: Restart Hugging Face Space to pull latest image
+      - name: Restart Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_REPO: ${{ vars.HF_REPO }}
@@ -18,8 +81,7 @@ jobs:
             echo "::error::HF_REPO is not set"
             exit 1
           fi
-          echo "Triggering Factory Reboot for $HF_REPO to pull latest docker image..."
-          # Factory reboot forces a complete rebuild of the container, pulling the latest layers
+          echo "Triggering Factory Reboot for $HF_REPO..."
           curl -X POST "https://huggingface.co/api/spaces/$HF_REPO/restart?factory=true" \
                -H "Authorization: Bearer $HF_TOKEN" \
                -v
